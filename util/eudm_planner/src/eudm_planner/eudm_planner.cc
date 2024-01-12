@@ -52,9 +52,9 @@ ErrorType EudmPlanner::GetSimParam(const planning::eudm::ForwardSimDetail& cfg,
 ErrorType EudmPlanner::Init(const std::string config) {
   ReadConfig(config);
 
-  dcp_tree_ptr_ = new DcpTree(cfg_.sim().duration().tree_height(),
-                              cfg_.sim().duration().layer(),
-                              cfg_.sim().duration().last_layer());
+  dcp_tree_ptr_ = new DcpTree(cfg_.sim().duration().tree_height()/*5*/,
+                              cfg_.sim().duration().layer()/*1.0*/,
+                              cfg_.sim().duration().last_layer()/*1.0*/);
   LOG(INFO) << "[Eudm]Init.";
   LOG(INFO) << "[Eudm]ActionScript size: "
             << dcp_tree_ptr_->action_script().size() << std::endl;
@@ -176,7 +176,7 @@ ErrorType EudmPlanner::ClassifyActionSeq(
 ErrorType EudmPlanner::PrepareMultiThreadContainers(const int n_sequence) {
   LOG(INFO) << "[Eudm][Process]Prepare multi-threading - " << n_sequence
             << " threads.";
-
+  // 自车每一个动作序列对应了一种结果
   sim_res_.clear();
   sim_res_.resize(n_sequence, 0);
 
@@ -223,18 +223,22 @@ ErrorType EudmPlanner::GetSurroundingForwardSimAgents(
     fsagent.sim_param = agent_sim_param_;
 
     common::State state = psv.second.vehicle.state();
+    // [Implemention]: 对应论文中的 longitudinal action: 通过设置 desired_velocity 来得到同样的加减速效果
+    // TODO(wanghao): 扩展 desired_velocity 的种类
     // ~ If other vehicles' acc > 0, we assume constant velocity
     if (state.acceleration >= 0) {
       fsagent.sim_param.idm_param.kDesiredVelocity = state.velocity;
     } else {
+      // uniform deceleration to desired velocity.
       decimal_t est_vel =
           std::max(0.0, state.velocity + state.acceleration * sim_time_total_);
       fsagent.sim_param.idm_param.kDesiredVelocity = est_vel;
     }
 
     // * lat
-    fsagent.lat_probs = psv.second.probs_lat_behaviors;
-    fsagent.lat_behavior = psv.second.lat_behavior;
+    // probs_lat_behaviors: 每个 agent 应该对应了多个可能的 lat_behavior 及对应的概率, voyager 可以从 prediction 的多模态得到
+    fsagent.lat_probs = psv.second.probs_lat_behaviors; // 下游并没有用到这个概率值去计算cost
+    fsagent.lat_behavior = psv.second.lat_behavior; // 最大概率的 lat action
 
     fsagent.lane = psv.second.lane;
     fsagent.stf = common::StateTransformer(fsagent.lane);
@@ -249,7 +253,7 @@ ErrorType EudmPlanner::GetSurroundingForwardSimAgents(
 }
 
 ErrorType EudmPlanner::RunEudm() {
-  // * get relevant information
+  // * get relevant information（搜索周围一定范围内的agent）
   common::SemanticVehicleSet surrounding_semantic_vehicles;
   if (map_itf_->GetKeySemanticVehicles(&surrounding_semantic_vehicles) !=
       kSuccess) {
@@ -257,14 +261,17 @@ ErrorType EudmPlanner::RunEudm() {
     return kWrongStatus;
   }
 
+  // 为 key vehicle 设置一些 forward simulation 的参数
   ForwardSimAgentSet surrounding_fsagents;
   GetSurroundingForwardSimAgents(surrounding_semantic_vehicles,
                                  &surrounding_fsagents);
 
+  // 自车可能的动作序列
   auto action_script = dcp_tree_ptr_->action_script();
   int n_sequence = action_script.size();
 
   // * prepare for multi-threading
+  // 自车每一个动作序列使用一个线程
   std::vector<std::thread> thread_set(n_sequence);
   PrepareMultiThreadContainers(n_sequence);
 
@@ -291,7 +298,7 @@ ErrorType EudmPlanner::RunEudm() {
       num_valid_behaviors++;
     }
   }
-
+  // For debug
   for (int i = 0; i < n_sequence; ++i) {
     std::ostringstream line_info;
     line_info << "[Eudm][Result]" << i << " [";
@@ -358,6 +365,10 @@ ErrorType EudmPlanner::UpdateSimSetupForScenario(
   common::LateralBehavior seq_lat_behavior;
   decimal_t operation_at_seconds;
   bool is_cancel_behavior;
+  // Example: 假设每个action.t = 1s，对于一个action_seq: LK, LK, LK, LCL, LCL, LCL, LK, LK，
+  // operation_at_seconds = 3; 在第3s处改变动作
+  // seq_lat_behavior = LCL; 从 LK 转换的动作
+  // is_cancel_behavior = true; LCL完成，重新LK
   ClassifyActionSeq(action_seq, &operation_at_seconds, &seq_lat_behavior,
                     &is_cancel_behavior);
   ego_fsagent->operation_at_seconds = operation_at_seconds;
@@ -366,14 +377,18 @@ ErrorType EudmPlanner::UpdateSimSetupForScenario(
 
   // * get action sequence type
   if (is_cancel_behavior) {
+    // 代表从换道到取消
     ego_fsagent->lat_behavior_longterm = LateralBehavior::kLaneKeeping;
     ego_fsagent->seq_lat_mode = LatSimMode::kChangeThenCancel;
   } else {
     if (seq_lat_behavior == LateralBehavior::kLaneKeeping) {
+      // 整条序列是LK
       ego_fsagent->seq_lat_mode = LatSimMode::kAlwaysLaneKeep;
     } else if (action_seq.front().lat == DcpLatAction::kLaneKeeping) {
+      // 从 LK 到 LC
       ego_fsagent->seq_lat_mode = LatSimMode::kKeepThenChange;
     } else {
+      // 整条序列是 LC
       ego_fsagent->seq_lat_mode = LatSimMode::kAlwaysLaneChange;
     }
     ego_fsagent->lat_behavior_longterm = seq_lat_behavior;
@@ -387,16 +402,16 @@ ErrorType EudmPlanner::UpdateSimSetupForScenario(
   switch (action_seq[1].lon) {
     case DcpLonAction::kAccelerate: {
       idm_param_tmp.kDesiredVelocity = std::min(
-          desired_vel + cfg_.sim().acc_cmd_vel_gap(), desired_velocity_);
+          desired_vel + cfg_.sim().acc_cmd_vel_gap()/*=10.0*/, desired_velocity_);
       idm_param_tmp.kMinimumSpacing *=
-          (1.0 - cfg_.sim().ego().lon_aggressive_ratio());
+          (1.0 - cfg_.sim().ego().lon_aggressive_ratio()/*=0.25*/);
       idm_param_tmp.kDesiredHeadwayTime *=
-          (1.0 - cfg_.sim().ego().lon_aggressive_ratio());
+          (1.0 - cfg_.sim().ego().lon_aggressive_ratio()/*=0.25*/);
       break;
     }
     case DcpLonAction::kDecelerate: {
       idm_param_tmp.kDesiredVelocity =
-          std::min(std::max(desired_vel - cfg_.sim().dec_cmd_vel_gap(), 0.0),
+          std::min(std::max(desired_vel - cfg_.sim().dec_cmd_vel_gap()/*=10.0*/, 0.0),
                    desired_velocity_);
       break;
     }
@@ -411,7 +426,7 @@ ErrorType EudmPlanner::UpdateSimSetupForScenario(
   }
   ego_fsagent->sim_param = ego_sim_param_;
   ego_fsagent->sim_param.idm_param = idm_param_tmp;
-  ego_fsagent->lat_range = cfg_.sim().ego().cooperative_lat_range();
+  ego_fsagent->lat_range = cfg_.sim().ego().cooperative_lat_range()/*=2.2*/;
 
   return kSuccess;
 }
@@ -432,9 +447,9 @@ ErrorType EudmPlanner::UpdateSimSetupForLayer(
   // * related lanes
   auto state = ego_fsagent->vehicle.state();
   decimal_t forward_lane_len =
-      std::min(std::max(state.velocity * cfg_.sim().ref_line().len_vel_coeff(),
-                        cfg_.sim().ref_line().forward_len_min()),
-               cfg_.sim().ref_line().forward_len_max());
+      std::min(std::max(state.velocity * cfg_.sim().ref_line().len_vel_coeff()/*10.0*/,
+                        cfg_.sim().ref_line().forward_len_min()/*=50.0*/),
+               cfg_.sim().ref_line().forward_len_max()/*=150.0*/);
 
   common::Lane lane_current;
   if (map_itf_->GetRefLaneForStateByBehavior(
@@ -539,11 +554,13 @@ ErrorType EudmPlanner::UpdateSimSetupForLayer(
   return kSuccess;
 }
 
+// 模拟一个 ego action 序列
 ErrorType EudmPlanner::SimulateScenario(
     const common::Vehicle& ego_vehicle,
     const ForwardSimAgentSet& surrounding_fsagents,
     const std::vector<DcpAction>& action_seq, const int& seq_id,
-    const int& sub_seq_id, std::vector<int>* sub_sim_res,
+    const int& sub_seq_id,
+    std::vector<int>* sub_sim_res,
     std::vector<int>* sub_risky_res, std::vector<std::string>* sub_sim_info,
     std::vector<std::vector<CostStructure>>* sub_progress_cost,
     std::vector<CostStructure>* sub_tail_cost,
@@ -569,6 +586,8 @@ ErrorType EudmPlanner::SimulateScenario(
   // * Setup ego longitudinal sim config
   ForwardSimEgoAgent ego_fsagent_this_layer;
   ego_fsagent_this_layer.vehicle = ego_vehicle;
+  // 横向上对该 action_seq 设置一些类型参数，纵向上设置加、减、保持速度三种参数
+  // 这在下面 forward simulation 中使用
   UpdateSimSetupForScenario(action_seq, &ego_fsagent_this_layer);
 
   ForwardSimAgentSet surrounding_fsagents_this_layer = surrounding_fsagents;
@@ -591,7 +610,7 @@ ErrorType EudmPlanner::SimulateScenario(
                                            surrounding_fsagents_this_layer,
                                            &ego_fsagent_this_layer)) {
       (*sub_sim_res)[sub_seq_id] = 0;
-      (*sub_sim_info)[sub_seq_id] += std::string("(Update setup F)");
+      (*sub_sim_info)[sub_seq_id] += std::string("(Update setup Failed)");
       return kWrongStatus;
     }
 
@@ -691,7 +710,7 @@ ErrorType EudmPlanner::SimulateScenario(
         risky_ids_multilayers.insert(id);
       }
     }
-    cost.weight = cost.weight * pow(cfg_.cost().discount_factor(), i);
+    cost.weight = cost.weight * pow(cfg_.cost().discount_factor()/*0.7*/, i); // 这里对应着MDP的折扣因子
     cost.valid_sample_index_ub = ego_traj_multilayers.size();
     cost_multilayers.push_back(cost);
   }
@@ -719,6 +738,7 @@ ErrorType EudmPlanner::SimulateActionSequence(
     const common::Vehicle& ego_vehicle,
     const ForwardSimAgentSet& surrounding_fsagents,
     const std::vector<DcpAction>& action_seq, const int& seq_id) {
+  // Don't simulate for 不合理的动作序列
   if (pre_deleted_seq_ids_.find(seq_id) != pre_deleted_seq_ids_.end()) {
     sim_res_[seq_id] = 0;
     sim_info_[seq_id] = std::string("(Pre-deleted)");
@@ -743,6 +763,7 @@ ErrorType EudmPlanner::SimulateActionSequence(
   vec_E<std::unordered_map<int, vec_E<common::Vehicle>>> sub_surround_trajs(
       n_sub_threads);
 
+  // 对一个动作序列进行模拟，对应论文伪代码中的第一个for循环
   SimulateScenario(ego_vehicle, surrounding_fsagents, action_seq, seq_id, 0,
                    &sub_sim_res, &sub_risky_res, &sub_sim_info,
                    &sub_progress_cost, &sub_tail_cost, &sub_forward_trajs,
@@ -893,6 +914,7 @@ ErrorType EudmPlanner::RunOnce() {
                << lc_info_.left_solid_lane << "," << lc_info_.right_solid_lane;
   ego_lane_id_ = ego_lane_id_by_pos;
 
+  // RSS: responsibility-sensitive safety.
   const decimal_t forward_rss_check_range = 130.0;
   const decimal_t backward_rss_check_range = 130.0;
   const decimal_t forward_lane_len = forward_rss_check_range;
@@ -914,11 +936,12 @@ ErrorType EudmPlanner::RunOnce() {
     auto action_seq = dcp_tree_ptr_->action_script()[i];
     int num_actions = action_seq.size();
     for (int j = 1; j < num_actions; j++) {
+      // 左/右换道的下个动作不可以是右/左换道
       if ((action_seq[j - 1].lat == DcpLatAction::kLaneChangeLeft &&
            action_seq[j].lat == DcpLatAction::kLaneChangeRight) ||
           (action_seq[j - 1].lat == DcpLatAction::kLaneChangeRight &&
            action_seq[j].lat == DcpLatAction::kLaneChangeLeft)) {
-        pre_deleted_seq_ids_.insert(i);
+        pre_deleted_seq_ids_.insert(i);  // 存储不合理的序列索引
       }
     }
   }
@@ -1039,7 +1062,7 @@ ErrorType EudmPlanner::StrictSafetyCheck(
     return kSuccess;
   }
 
-  int num_points_ego = ego_traj.size();
+  int num_points_ego = ego_traj.size(); // 轨迹点的数量
   if (num_points_ego == 0) {
     *is_safe = true;
     return kSuccess;
@@ -1052,6 +1075,8 @@ ErrorType EudmPlanner::StrictSafetyCheck(
       LOG(ERROR) << "[Eudm]unsafe due to incomplete sim record for vehicle";
       return kSuccess;
     }
+    // 由于是按照时间同步模拟的自车和周围车辆，相同index下的位置代表同一时间下的位置，
+    // 这样才能更好的判断时空是否交叠
     for (int i = 0; i < num_points_ego; i++) {
       common::Vehicle inflated_a, inflated_b;
       common::SemanticsUtils::InflateVehicleBySize(
@@ -1066,7 +1091,7 @@ ErrorType EudmPlanner::StrictSafetyCheck(
                                          &is_collision);
       if (is_collision) {
         *is_safe = false;
-        *collided_id = it->second[i].id();
+        *collided_id = it->second[i].id();  // 发生碰撞的车辆ID
         return kSuccess;
       }
     }
@@ -1229,12 +1254,13 @@ ErrorType EudmPlanner::CostFunction(
 
 ErrorType EudmPlanner::GetSimTimeSteps(const DcpAction& action,
                                        std::vector<decimal_t>* dt_steps) const {
-  decimal_t sim_time_resolution = cfg_.sim().duration().step();
+  decimal_t sim_time_resolution = cfg_.sim().duration().step()/*=0.2*/;
   decimal_t sim_time_total = action.t;
   int n_1 = std::floor(sim_time_total / sim_time_resolution);
   decimal_t dt_remain = sim_time_total - n_1 * sim_time_resolution;
   std::vector<decimal_t> steps(n_1, sim_time_resolution);
   if (fabs(dt_remain) > kEPS) {
+    // 将不足sim_time_resolution的时间插入到开始
     steps.insert(steps.begin(), dt_remain);
   }
   *dt_steps = steps;
@@ -1256,6 +1282,7 @@ ErrorType EudmPlanner::SimulateSingleAction(
   }
 
   // ~ Simulation time steps
+  // 每个动作之间的时间间隔较大，此处继续减小间隔，使用 dt= 0.2s 模拟
   std::vector<decimal_t> dt_steps;
   GetSimTimeSteps(action, &dt_steps);
 
@@ -1279,6 +1306,7 @@ ErrorType EudmPlanner::SimulateSingleAction(
     }
 
     // * For ego agent
+    // 计算自车向前模拟（LK 与 LC）一步到达的状态
     {
       all_sim_vehicles.vehicles.at(ego_id_).set_id(kInvalidAgentId);
 
@@ -1291,13 +1319,14 @@ ErrorType EudmPlanner::SimulateSingleAction(
 
       common::Vehicle v_tmp = ego_fsagent_this_step.vehicle;
       v_tmp.set_state(state_output);
-      ego_traj->push_back(v_tmp);
+      ego_traj->push_back(v_tmp); // 每个元素代表轨迹上的一个状态
       ego_state_cache_this_step = state_output;
 
       all_sim_vehicles.vehicles.at(ego_id_).set_id(ego_id_);
     }
 
     // * For surrounding agents
+    // 周围车辆按照已设置的参数仿真(GetSurroundingForwardSimAgents)
     {
       for (const auto& p_fsa :
            surrounding_fsagents_this_step.forward_sim_agents) {
@@ -1363,7 +1392,7 @@ ErrorType EudmPlanner::EgoAgentForwardSim(
             ego_fsagent.target_lane, ego_fsagent.vehicle.state(),
             all_sim_vehicles, ego_fsagent.lat_range, &leading_vehicle,
             &distance_residual_ratio) == kSuccess) {
-      // ~ with leading vehicle
+      // ~ with leading vehicle，检查自车当前位置是否与leading vehicle碰撞
       bool is_collision = false;
       map_itf_->CheckCollisionUsingState(
           ego_fsagent.vehicle.param(), ego_fsagent.vehicle.state(),
@@ -1374,7 +1403,7 @@ ErrorType EudmPlanner::EgoAgentForwardSim(
     }
 
     // TODO(lu.zhang): consider lateral social force to get lateral offset
-    decimal_t lat_track_offset = 0.0;
+    decimal_t lat_track_offset = 0.0;  // 0.0 代表横向上按照车道中心线行驶
     if (planning::OnLaneForwardSimulation::PropagateOnceAdvancedLK(
             ego_fsagent.target_stf, ego_fsagent.vehicle, leading_vehicle,
             lat_track_offset, sim_time_step, ego_fsagent.sim_param,
@@ -1569,8 +1598,11 @@ int EudmPlanner::winner_id() const { return winner_id_; }
 decimal_t EudmPlanner::time_cost() const { return time_cost_; }
 
 void EudmPlanner::UpdateDcpTree(const DcpAction& ongoing_action) {
+  // 设置当前的动作
   dcp_tree_ptr_->set_ongoing_action(ongoing_action);
+  // 基于当前动作和一个序列之改变一次的原则生成 DCP-TREE 序列
   dcp_tree_ptr_->UpdateScript();
+  // 所有dcp-tree层数的时间之和
   sim_time_total_ = dcp_tree_ptr_->planning_horizon();
 }
 

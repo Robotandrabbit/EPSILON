@@ -46,20 +46,28 @@ ErrorType SemanticMapManager::UpdateSemanticMap(
   UpdateSemanticLaneSet();
 
   // * update key lanes and its LUT
+  // LUT 是啥
   if (agent_config_info_.enable_fast_lane_lut) {
     UpdateLocalLanesAndFastLut();
   }
 
   // * update semantic info for vehicles
+  // 得到所有 surrounding_vehicles 的最近车道、参考车道、具有概率的行为等信息.
   UpdateSemanticVehicles();
 
   // * update selected key vehicles
   UpdateKeyVehicles();
 
   // * openloop prediction for all semantic vehicles
+  /* 
+    这里的 openloop prediction 相当于预测模块输出的轨迹：
+    横向上（steer）：利用 pure-pursuit
+    纵向上（velocity）: 利用 Improve IDM
+    再利用一个kinemamic model 获取推演的最终状态
+  */
   if (agent_config_info_.enable_openloop_prediction) {
     OpenloopTrajectoryPrediction();
-  }
+  } 
 
   if (agent_config_info_.enable_log) {
     SaveMapToLog();
@@ -113,6 +121,8 @@ ErrorType SemanticMapManager::NaiveRuleBasedLateralBehaviorPrediction(
   const decimal_t lat_distance_threshold = 0.4;
   const decimal_t lat_vel_threshold = 0.35;
   if (use_right_hand_axis_) {
+    // 右手坐标系：左正右负
+    // 横向上的位置速度都超过一定阈值后且向此处支持左换道，将认为在左换道
     if (fs.vec_dt[0] > lat_distance_threshold &&
         fs.vec_dt[1] > lat_vel_threshold &&
         nearest_lane.l_lane_id != kInvalidLaneId &&
@@ -123,6 +133,7 @@ ErrorType SemanticMapManager::NaiveRuleBasedLateralBehaviorPrediction(
           "behavior "
           "lcl.\n",
           vehicle.id(), nearest_lane_id, fs.vec_dt[0], fs.vec_dt[1]);
+    // 横向上的位置速度都超过一定阈值后且向此处支持右换道，将认为在左换道
     } else if (fs.vec_dt[0] < -lat_distance_threshold &&
                fs.vec_dt[1] < -lat_vel_threshold &&
                nearest_lane.r_lane_id != kInvalidLaneId &&
@@ -161,7 +172,7 @@ ErrorType SemanticMapManager::NaiveRuleBasedLateralBehaviorPrediction(
       prob_lk = 1.0;
     }
   }
-
+  // 这里给出了确定的LateralBehavior，因为对应的概率都是1.
   lat_probs->SetEntry(common::LateralBehavior::kLaneChangeLeft, prob_lcl);
   lat_probs->SetEntry(common::LateralBehavior::kLaneChangeRight, prob_lcr);
   lat_probs->SetEntry(common::LateralBehavior::kLaneKeeping, prob_lk);
@@ -283,7 +294,7 @@ ErrorType SemanticMapManager::UpdateSemanticVehicles() {
         semantic_vehicle.vehicle, semantic_vehicle.nearest_lane_id,
         &semantic_vehicle.probs_lat_behaviors);
     semantic_vehicle.probs_lat_behaviors.GetMaxProbBehavior(
-        &semantic_vehicle.lat_behavior);
+        &semantic_vehicle.lat_behavior);  // semantic_vehicle.lat_behavior是唯一的，代表最可能的behavior
 
     decimal_t max_backward_len = 10.0;
     decimal_t forward_lane_len =
@@ -291,7 +302,7 @@ ErrorType SemanticMapManager::UpdateSemanticVehicles() {
     GetRefLaneForStateByBehavior(
         semantic_vehicle.vehicle.state(), std::vector<int>(),
         semantic_vehicle.lat_behavior, forward_lane_len, max_backward_len,
-        false, &semantic_vehicle.lane);
+        false, &semantic_vehicle.lane);  // 根据 behavior 得到agent的目标车道
 
     semantic_vehicles_tmp.semantic_vehicles.insert(
         std::pair<int, common::SemanticVehicle>(semantic_vehicle.vehicle.id(),
@@ -870,6 +881,7 @@ ErrorType SemanticMapManager::TrajectoryPredictionForVehicle(
   return kSuccess;
 }
 
+// semantic_key_vehicles_: 先得到 key lane，然后看一定范围内的 agent 是否在 key lane 上
 ErrorType SemanticMapManager::UpdateKeyVehicles() {
   // ~ directly use semantic surrounding vehicle as key vehicle
   semantic_key_vehicles_ = semantic_surrounding_vehicles_;
@@ -1324,6 +1336,7 @@ ErrorType SemanticMapManager::GetTargetLaneId(const int lane_id,
   return kSuccess;
 }
 
+// 从自车位置开始向前按照一定分辨率查找
 ErrorType SemanticMapManager::GetLeadingVehicleOnLane(
     const common::Lane &ref_lane, const common::State &ref_state,
     const common::VehicleSet &vehicle_set, const decimal_t &lat_range,
@@ -1388,6 +1401,7 @@ ErrorType SemanticMapManager::GetLeadingVehicleOnLane(
   return kSuccess;
 }
 
+// 从自车位置开始向后按照一定分辨率搜索第一个 following_vehicle
 ErrorType SemanticMapManager::GetFollowingVehicleOnLane(
     const common::Lane &ref_lane, const common::State &ref_state,
     const common::VehicleSet &vehicle_set, const decimal_t &lat_range,

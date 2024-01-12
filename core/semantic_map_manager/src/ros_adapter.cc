@@ -8,6 +8,7 @@ void RosAdapter::Init() {
     // arena_info_sub_ =
     //     nh_.subscribe("arena_info", 2, &RosAdapter::ArenaInfoCallback, this,
     //                   ros::TransportHints().tcpNoDelay());
+    // Init() 通过 nh 订阅功能，使得 RosAdapter 的实例化对象可以接收到 arena_info_static 和 arena_info_dynamic 两个话题的消息
     arena_info_static_sub_ = nh_.subscribe(
         "arena_info_static", 2, &RosAdapter::ArenaInfoStaticCallback, this,
         ros::TransportHints().tcpNoDelay());
@@ -38,6 +39,7 @@ void RosAdapter::ArenaInfoStaticCallback(
   get_arena_info_static_ = true;
 }
 
+// p_data_renderer_->Render作用：获取自车、路网、关键车辆以及agent的预测轨迹等环境信息
 void RosAdapter::ArenaInfoDynamicCallback(
     const vehicle_msgs::ArenaInfoDynamic::ConstPtr& msg) {
   ros::Time time_stamp;

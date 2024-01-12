@@ -26,7 +26,7 @@ class OnLaneForwardSimulation {
 
   struct Param {
     simulator::IntelligentDriverModel::Param idm_param;
-    decimal_t steer_control_gain = 1.5;
+    decimal_t steer_control_gain = 1.5; // GPT：转向控制增益是指用于调整车辆转向行为的一个参数，它影响着转向系统对输入的转向命令的响应速度和灵敏度。通俗地说，增益越大，车辆对转向输入的响应越快，转向行为越敏感；增益越小，车辆对转向输入的响应越慢，转向行为越迟缓。
     decimal_t steer_control_max_lookahead_dist = 50.0;
     decimal_t steer_control_min_lookahead_dist = 3.0;
     decimal_t max_lat_acceleration_abs = 1.5;
@@ -156,9 +156,16 @@ class OnLaneForwardSimulation {
     return kSuccess;
   }
 
+  // 函数实现了模拟dt时间所到达的状态点 state（位置、速度等全状态），具体三部:
+  // 1. 横向上：
+  //    获取 dt 时间到达的目标 frenet 位置坐标： s = 自车的速度 * sterr_control_gain; l = 0;
+  //    由目标位置及当前位置用 pure pursuit 计算出所需的转角 steer.
+  // 2. 纵向上：
+  //    利用 IDM 预先设计的参数通过考虑与 leading vehicle 安全交互得到速度 v
+  // 3. 用 IdealSteerModel 输出更加符合运动学的目标状态
   static ErrorType PropagateOnceAdvancedLK(
       const common::StateTransformer& stf, const common::Vehicle& ego_vehicle,
-      const Vehicle& leading_vehicle, const decimal_t& lat_track_offset,
+      const Vehicle& leading_vehicle, const decimal_t& lat_track_offset/*0.0*/,
       const decimal_t& dt, const Param& param, State* desired_state) {
     common::State current_state = ego_vehicle.state();
     decimal_t wheelbase_len = ego_vehicle.param().wheel_base();
@@ -177,8 +184,9 @@ class OnLaneForwardSimulation {
     if (!steer_calculation_failed) {
       decimal_t approx_lookahead_dist =
           std::min(std::max(param.steer_control_min_lookahead_dist,
-                            current_state.velocity * param.steer_control_gain),
+                            current_state.velocity * param.steer_control_gain/*如何理解这个乘法?*/),
                    param.steer_control_max_lookahead_dist);
+      // 利用 pure pursuit controller，在已知自车当前状态和模拟目标状态下，计算所需要的转角steer.
       if (CalcualateSteer(stf, current_state, current_fs, wheelbase_len,
                           Vec2f(approx_lookahead_dist, lat_track_offset),
                           &steer) != kSuccess) {
@@ -317,7 +325,7 @@ class OnLaneForwardSimulation {
 
   static ErrorType PropagateOnce(const common::StateTransformer& stf,
                                  const common::Vehicle& ego_vehicle,
-                                 const Vehicle& leading_vehicle,
+                                 const Vehicle& leading_vehicle, // openloop 时可以不考虑leading vehicle
                                  const decimal_t& dt, const Param& param,
                                  State* desired_state) {
     common::State current_state = ego_vehicle.state();
@@ -340,7 +348,7 @@ class OnLaneForwardSimulation {
                             current_state.velocity * param.steer_control_gain),
                    param.steer_control_max_lookahead_dist);
       if (CalcualateSteer(stf, current_state, current_fs, wheelbase_len,
-                          Vec2f(approx_lookahead_dist, 0.0),
+                          Vec2f(approx_lookahead_dist, 0.0), // 这里假定横向上位置不变
                           &steer) != kSuccess) {
         steer_calculation_failed = true;
       }
@@ -422,12 +430,15 @@ class OnLaneForwardSimulation {
 
     decimal_t len_rb2r = fabs(leading_fs.vec_s(0) - s_nearest_vtx);
     // ego rear-axle to front bumper + leading rear bumper to rear-axle
+    // 这是用自车的参数加上leading vehicle 的参数来估计 leading vehicle 的长度吗？
+    // voyager 应该可以直接从agent inlane state 拿到车辆的长度
     *eqv_vehicle_len = ego_vehicle.param().length() / 2.0 +
                        ego_vehicle.param().d_cr() + len_rb2r;
 
     return kSuccess;
   }
 
+  // 基于单步的偏移得到frenet下的偏移点，进而转换到XY坐标系，并利用pure pursuit计算所需的转角 steer
   static ErrorType CalcualateSteer(const common::StateTransformer& stf,
                                    const State& current_state,
                                    const FrenetState& current_fs,
@@ -437,6 +448,7 @@ class OnLaneForwardSimulation {
     common::FrenetState dest_fs;
     dest_fs.Load(Vecf<3>(lookahead_offset(0) + current_fs.vec_s[0], 0.0, 0.0),
                  Vecf<3>(lookahead_offset(1), 0.0, 0.0),
+               /*Vecf<3>(lookahead_offset(1) + current_fs.vec_d[0], 0.0, 0.0) lookahead_offset是移动的距离，那么求移动之后的位置应该是基于当前位置的*/
                  common::FrenetState::kInitWithDs);
 
     State dest_state;
@@ -450,6 +462,7 @@ class OnLaneForwardSimulation {
         vec2d_to_angle(dest_state.vec_position - current_state.vec_position);
     decimal_t angle_diff =
         normalize_angle(cur_to_dest_angle - current_state.angle);
+    // 在 xy 坐标系下，利用pure pursuit计算所需的转角 steer
     control::PurePursuitControl::CalculateDesiredSteer(
         wheelbase_len, angle_diff, look_ahead_dist, steer);
     return kSuccess;

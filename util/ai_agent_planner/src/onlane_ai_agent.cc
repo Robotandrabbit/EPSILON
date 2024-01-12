@@ -156,18 +156,18 @@ int main(int argc, char** argv) {
   ctrl_signal_pub_ = nh.advertise<vehicle_msgs::ControlSignal>("ctrl", 10);
 
   int autonomous_level;
-  nh.param("desired_vel", desired_vel, 6.0);
+  nh.param("desired_vel", desired_vel, 6.0); // 如果参数服务器中没有名为 "desired_vel" 的参数，将使用默认值。在这里，默认值是6.0。
   nh.param("autonomous_level", autonomous_level, 2);
 
   // Get desired velocity noise
   rng.seed(
-      std::chrono::high_resolution_clock::now().time_since_epoch().count());
+      std::chrono::high_resolution_clock::now().time_since_epoch().count()); // 以当前的时间戳作为seed，生成随机数
   // config aggressiveness
   nh.param("aggressiveness_level", aggressiveness_level, 3);
   // std::uniform_int_distribution<int> dist_agg(1, 5);
   // aggressiveness_level = dist_agg(rng);
   // aggressiveness_level = 5;
-  planning::MultiModalForward::ParamLookUp(aggressiveness_level, &sim_param);
+  // planning::MultiModalForward::ParamLookUp(aggressiveness_level, &sim_param);
   printf("[OnlaneAi]%d - aggresive: %d\n", ego_id, aggressiveness_level);
 
   // Declare smm
@@ -186,12 +186,13 @@ int main(int argc, char** argv) {
   smm_ros_adapter.BindMapUpdateCallback(SemanticMapUpdateCallback);
   p_bp_server_->BindBehaviorUpdateCallback(BehaviorUpdateBallback);
 
+  // 获取自车、路网、关键车辆以及agent的预测轨迹等环境信息
   smm_ros_adapter.Init();
   p_bp_server_->Init();
 
   p_ctrl_input_smm_buff_ = new moodycamel::ReaderWriterQueue<
       semantic_map_manager::SemanticMapManager>(100);
-
+  // 根据环境信息开始主逻辑
   p_bp_server_->Start();
   ros::Rate rate(fs_work_rate);
   while (ros::ok()) {

@@ -36,7 +36,7 @@ ErrorType DataRenderer::Render(const double &time_stamp,
   GetObstacleMap(obstacle_set);
   GetWholeLaneNet(lane_net);
   GetSurroundingLaneNet(lane_net);
-  GetSurroundingVehicles(vehicle_set);
+  GetSurroundingVehicles(vehicle_set); // 获取与ego一定范围内的车辆
 
   if (p_semantic_map_manager_->agent_config_info().enable_tracking_noise) {
     InjectObservationNoise();
@@ -54,6 +54,7 @@ ErrorType DataRenderer::Render(const double &time_stamp,
   return kSuccess;
 }
 
+
 ErrorType DataRenderer::InjectObservationNoise() {
   // * update uncertain vehicle ids if necessary
   if (ego_id_ != 0) return kSuccess;
@@ -62,7 +63,7 @@ ErrorType DataRenderer::InjectObservationNoise() {
   if (cnt_random_ == 10) {
     uncertain_vehicle_ids_.clear();
     const decimal_t angle_noise_std = 0.22;
-    std::normal_distribution<double> lat_pos_dist(0.0, 0.2);
+    std::normal_distribution<double> lat_pos_dist(0.0, 0.2); // 生成服从正态分布的随机数
     std::normal_distribution<double> long_pos_dist(0.0, 0.7);
     std::normal_distribution<double> angle_dist(0.0, angle_noise_std);
 
@@ -71,7 +72,7 @@ ErrorType DataRenderer::InjectObservationNoise() {
     for (const auto &v : surrounding_vehicles_.vehicles) {
       surrounding_ids.push_back(v.first);
     }
-    std::shuffle(surrounding_ids.begin(), surrounding_ids.end(),
+    std::shuffle(surrounding_ids.begin(), surrounding_ids.end(), // 对surrounding_ids进行随机排列
                  random_engine_);
 
     std::vector<int> sampled_ids;
@@ -79,7 +80,7 @@ ErrorType DataRenderer::InjectObservationNoise() {
       sampled_ids.push_back(surrounding_ids[i]);
     }
 
-    // * inject noise
+    // * inject noise： 利用noise 改变 agent 的位姿，并标记为 uncertain_vehicle_ids_;
     for (auto &v : surrounding_vehicles_.vehicles) {
       if (std::find(sampled_ids.begin(), sampled_ids.end(), v.first) ==
           sampled_ids.end())

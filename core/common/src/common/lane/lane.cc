@@ -107,6 +107,7 @@ ErrorType Lane::GetOrientationByArcLength(const decimal_t arc_length,
   return kSuccess;
 }
 
+// wenchao 讲解过
 ErrorType Lane::GetArcLengthByVecPosition(const Vecf<LaneDim>& vec_position,
                                           decimal_t* arc_length) const {
   if (!IsValid()) {

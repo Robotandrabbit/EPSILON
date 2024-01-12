@@ -305,6 +305,7 @@ class EudmPlanner : public Planner {
                                           decimal_t* winner_cost);
 
   // * simulation util functions
+  // 对每个纵向动作设置IDM的不同参数，IDM即可生成不同的轨迹
   ErrorType UpdateSimSetupForScenario(const std::vector<DcpAction>& action_seq,
                                       ForwardSimEgoAgent* ego_fsagent) const;
 

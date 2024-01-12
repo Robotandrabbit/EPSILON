@@ -181,6 +181,7 @@ struct ProbDistOfLatBehaviors {
     probs[beh] = val;
   }
 
+  // prob 应该处在（0，1）之间
   bool CheckIfNormalized() const {
     decimal_t sum = 0.0;
     for (const auto &entry : probs) {

@@ -71,6 +71,7 @@ ErrorType RssChecker::CalculateSafeLongitudinalVelocity(
   decimal_t other_distance_driven;
   if (direction == Front) {
     if (other_vel >= 0.0) {
+      // 模拟 agent 急刹时，自车的最大安全速度
       // ego ---->(lon_distance) other --->
       // other hard brake
       other_distance_driven =
@@ -86,6 +87,11 @@ ErrorType RssChecker::CalculateSafeLongitudinalVelocity(
                              config.longitudinal_brake_min) *
                         pow(config.response_time, 2) -
                     other_distance_driven - lon_distance_abs;
+      // a * v^2 + b * v + c = 0, 为什么可以通过这个公式求解？
+      // 系数 a = 1 / (2 * a_brake), a_brake 是减速度，则 a * v^2 = v^2 / 2 * a_brake, 代表匀减速到0需要的距离
+      // 系数 b = 反应时间，则 b * v 代表反应的距离
+      // 系数 c = -（纵向距离 + agent紧急刹车的距离)
+      // 求根公式得到：v = (-b + sqrt(b^2 - 4 * a * c)) / 2 * a;
       *ego_vel_upp = (-b + sqrt(pow(b, 2) - 4 * a * c)) / (2 * a);
       *ego_vel_low = 0.0;
     } else {
@@ -164,7 +170,7 @@ ErrorType RssChecker::CalculateSafeLateralDistance(
           config.response_time +
       other_lat_vel_at_response_time * other_lat_vel_at_response_time /
           (2 * config.lateral_brake_min);
-  if (direction == Right) {
+  if (direction == Right) { // agent 在自车右侧，vec: 左正右负
     if (ego_vel >= 0.0 && other_vel >= 0.0) {
       // -------------------------------
       // ego    ^^^^^^^^
@@ -304,7 +310,7 @@ ErrorType RssChecker::RssCheck(const Vehicle& ego_vehicle,
     printf("[RssChecker]other %d not on ref lane.\n", other_vehicle.id());
     return kWrongStatus;
   }
-
+  // 定义：agent 位于 ego 的方向
   LongitudinalDirection lon_direct;
   LateralDirection lat_direct;
 
@@ -334,6 +340,7 @@ ErrorType RssChecker::RssCheck(const Vehicle& ego_vehicle,
   safe_lat_distance +=
       0.5 * (ego_vehicle.param().width() + other_vehicle.param().width());
 
+  // Step_I: check lateral 足够安全 
   if (fabs(ego_fs.vec_dt[0] - other_fs.vec_dt[0]) > safe_lat_distance) {
     *is_safe = true;
     *lon_type = LongitudinalViolateType::Legal;
@@ -342,6 +349,7 @@ ErrorType RssChecker::RssCheck(const Vehicle& ego_vehicle,
     return kSuccess;
   }
 
+  // Step_II: Get longitudinal 自车的最小最大安全速度
   decimal_t lon_distance_abs, ego_vel_low, ego_vel_upp;
   if (lon_direct == Rear) {
     decimal_t other_rear_wheel_to_front_bump =

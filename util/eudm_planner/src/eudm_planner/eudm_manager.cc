@@ -27,7 +27,7 @@ decimal_t EudmManager::GetNearestFutureDecisionPoint(const decimal_t& stamp,
   // consider the nearest decision point (rounded by layer time)
   // w.r.t stamp + delta
   decimal_t past_decision_point =
-      std::floor((stamp + delta) / bp_.cfg().sim().duration().layer()) *
+      std::floor((stamp + delta) / bp_.cfg().sim().duration().layer()/*1.0*/) *
       bp_.cfg().sim().duration().layer();
   return past_decision_point + bp_.cfg().sim().duration().layer();
 }
@@ -79,7 +79,7 @@ ErrorType EudmManager::Prepare(
   map_adapter_.set_map(map_ptr);
 
   DcpAction desired_action;
-  if (!GetReplanDesiredAction(stamp, &desired_action)) {
+  if (!GetReplanDesiredAction(stamp, &desired_action)) {  // 在第一帧开始规划时由于context_没有赋值，此条件返回true
     desired_action.lat = DcpLatAction::kLaneKeeping;
     desired_action.lon = DcpLonAction::kMaintain;
     decimal_t fdp_stamp = GetNearestFutureDecisionPoint(stamp, 0.0);
@@ -90,7 +90,7 @@ ErrorType EudmManager::Prepare(
     return kWrongStatus;
   }
 
-  UpdateLaneChangeContextByTask(stamp, task);
+  UpdateLaneChangeContextByTask(stamp, task);  // TODO(whao): 主要是一些lane change的交互逻辑，更新变量: lc_context_
   if (lc_context_.completed) {
     desired_action.lat = DcpLatAction::kLaneKeeping;
   }
@@ -123,9 +123,10 @@ ErrorType EudmManager::Prepare(
               << "," << static_cast<int>(lc_context_.type) << ">";
     LOG(WARNING) << line_info.str();
   }
-
+  // 基于当前动作更新 dcp-tree，存在 eudm_planner 中
   bp_.UpdateDcpTree(desired_action);
   decimal_t ref_vel;
+  // 向前检查20m，根据车道中心线的曲率以及舒适的加速度得到最小速度。
   EvaluateReferenceVelocity(task, &ref_vel);
   LOG(WARNING) << "[Eudm][Manager]<task vel, ref_vel>:<"
                << task.user_desired_vel << "," << ref_vel << ">";
@@ -728,6 +729,7 @@ ErrorType EudmManager::EvaluateReferenceVelocity(
        s += resolution) {
     if (last_snapshot_.ref_lane.GetCurvatureByArcLength(s, &c, &cc) ==
         kSuccess) {
+      // 向心加速度公式：a = v^2 / r; c = 1 / r;
       v_max_by_curvature =
           sqrt(bp_.cfg().sim().ego().lat().limit().acc() / fabs(c));
       v_ref = v_max_by_curvature < v_ref ? v_max_by_curvature : v_ref;
@@ -794,6 +796,7 @@ ErrorType EudmManager::Run(
   // * I : Prepare
   static TicToc prepare_timer;
   prepare_timer.tic();
+  // 准备 map_adapter_、dcp_tree script、desired_velocity 及一些lane_change_info
   if (Prepare(stamp, map_ptr, task) != kSuccess) {
     return kWrongStatus;
   }

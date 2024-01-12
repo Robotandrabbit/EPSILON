@@ -74,6 +74,7 @@ ErrorType BehaviorPlanner::RunOnce() {
   }
   ego_id_ = ego_vehicle.id();
 
+  // route 模块生成一条长度大于200m的道路
   if (use_sim_state_) {
     RunRoutePlanner(ego_lane_id_by_pos);
   }
@@ -82,6 +83,10 @@ ErrorType BehaviorPlanner::RunOnce() {
     UpdateEgoLaneId(ego_lane_id_by_pos);
   }
 
+  // ego_lane_id_ 是上一帧的，ego_lane_id_by_pos 为每次循环当前帧
+  // 通过比较两者的关系来得到目前的behavior(LK, LCL, LCR)
+  // Q(wanghao): 这样在lane change 开始和结束的一段时间内都是lane keep，因为根据自车位置得到的 ego_lane_id_by_pos 没有改变；
+  // 车道id改变时，赋值 lane change；
   LateralBehavior behavior_by_lane_id;
   if (JudgeBehaviorByLaneId(ego_lane_id_by_pos, &behavior_by_lane_id) !=
       kSuccess) {
@@ -89,9 +94,11 @@ ErrorType BehaviorPlanner::RunOnce() {
     return kWrongStatus;
   }
 
+  // 根据ego-lane-id获取当前可行驶的车道
   UpdateEgoLaneId(ego_lane_id_by_pos);
   printf("[MPDM]ego lane id: %d.\n", ego_lane_id_);
 
+  // 识别自车当前的动作
   if (UpdateEgoBehavior(behavior_by_lane_id) != kSuccess) {
     printf("[RunOnce]fail to update ego behavior!\n");
     return kWrongStatus;
@@ -106,6 +113,7 @@ ErrorType BehaviorPlanner::RunOnce() {
   behavior_.actual_desired_velocity = user_desired_velocity_;
   if (autonomous_level_ >= 3) {
     TicToc timer;
+    // aggressive_level_ 是由nh人为设置的
     planning::MultiModalForward::ParamLookUp(aggressive_level_, &sim_param_);
     if (RunMpdm() != kSuccess) {
       printf("[Summary]Mpdm failed: %lf ms.\n", timer.toc());
@@ -166,6 +174,7 @@ ErrorType BehaviorPlanner::MultiBehaviorJudge(
   for (auto it = semantic_vehicle_set.semantic_vehicles.begin();
        it != semantic_vehicle_set.semantic_vehicles.end(); ++it) {
     common::LateralBehavior lat_behavior;
+    // map_itf_ 这里获取behavior是通过车辆当前位置和速度是否偏离车道来获取是否在执行变道动作的
     if (map_itf_->GetPredictedBehavior(it->second.vehicle.id(),
                                        &lat_behavior) != kSuccess) {
       lat_behavior = common::LateralBehavior::kLaneKeeping;
@@ -173,6 +182,7 @@ ErrorType BehaviorPlanner::MultiBehaviorJudge(
     decimal_t forward_lane_len =
         std::max(it->second.vehicle.state().velocity * 10.0, 50.0);
     common::Lane ref_lane;
+    // 从这里看每个 agent 设置了唯一的行为和 ref lane
     if (map_itf_->GetRefLaneForStateByBehavior(
             it->second.vehicle.state(), std::vector<int>(), lat_behavior,
             forward_lane_len, max_backward_len, false, &ref_lane) == kSuccess) {
@@ -522,6 +532,7 @@ ErrorType BehaviorPlanner::MultiAgentSimForward(
     vec_E<common::Vehicle>* traj,
     std::unordered_map<int, vec_E<common::Vehicle>>* surround_trajs) {
   traj->clear();
+  // 插入自车当前位置
   traj->push_back(semantic_vehicle_set.semantic_vehicles.at(ego_id).vehicle);
 
   surround_trajs->clear();
@@ -761,6 +772,10 @@ ErrorType BehaviorPlanner::JudgeBehaviorByLaneId(
 
 ErrorType BehaviorPlanner::UpdateEgoBehavior(
     const LateralBehavior& behavior_by_lane_id) {
+  // behavior_.lat_behavior 是由自车当前位置和速度是否偏离当前车道得到的，
+  // behavior_by_lane_id 由 id是否改变得到，因此当车辆开始偏离车道一定距离时被认为是换道，
+  // 当 lane-id 被切换时代表车辆已经进入了目标车道，即换道完成保持lane keeping.
+  // 当 lane-id 没有切换代表车辆仍然在当前车道内执行变道.
   if (behavior_.lat_behavior == common::LateralBehavior::kLaneKeeping) {
     if (behavior_by_lane_id == common::LateralBehavior::kLaneKeeping) {
       // ~ lane keeping

@@ -43,7 +43,7 @@ class DcpTree {
     DcpLonAction lon = DcpLonAction::kMaintain;
     DcpLatAction lat = DcpLatAction::kLaneKeeping;
 
-    decimal_t t = 0.0;
+    decimal_t t = 0.0; // 代表执行该动作的duration
 
     friend std::ostream& operator<<(std::ostream& os, const DcpAction& action) {
       os << "(lon: " << static_cast<int>(action.lon)

@@ -21,7 +21,7 @@ DcpTree::DcpTree(const int& tree_height, const decimal_t& layer_time)
 DcpTree::DcpTree(const int& tree_height, const decimal_t& layer_time,
                  const decimal_t& last_layer_time)
     : tree_height_(tree_height),
-      layer_time_(layer_time),
+      layer_time_(layer_time), // 从这里看 layer_time_ 是一个固定值，可以理解为每一层的间隔时间。
       last_layer_time_(last_layer_time) {
   GenerateActionScript();
 }
